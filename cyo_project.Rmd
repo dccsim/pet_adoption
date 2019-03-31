@@ -1,0 +1,2463 @@
+---
+title: 'Predicting pet adoption speeds'
+author: 'Dennis Sim'
+date: '`r format(Sys.time(), "%d %B, %Y")`'
+output: 
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_width: 6
+    fig_height: 3.5
+fontsize: 11pt
+geometry: margin=1in
+urlcolor: blue
+---
+<!--
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+-->
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = F, message=FALSE, warning=FALSE}
+library(knitr)
+
+# space out plots
+if(is_latex_output()) {
+  plot_default <- knit_hooks$get("plot")
+  knit_hooks$set(plot = function(x, options) { 
+    x <- c(plot_default(x, options), "\\vspace{25pt}")
+  })
+}
+
+# redefine the output hook function for chunks to hard-wrap output lines
+hook_output = knit_hooks$get('output')
+knit_hooks$set(output = function(x, options) {
+  # this hook is used only when the linewidth option is not NULL
+  if (!is.null(n <- options$linewidth)) {
+    x = knitr:::split_lines(x)
+    # any lines wider than n should be wrapped
+    if (any(nchar(x) > n)) x = strwrap(x, width = n)
+    x = paste(x, collapse = '\n')
+  }
+  hook_output(x, options)
+})
+```
+
+# Introduction
+
+[PetFinder.my](http://PetFinder.my) is an animal welfare platform in Malaysia with a database of more than 150,000 animals where animals are listed for adoption.  This project will study the possibility to build a prediction model that predicts animal adoption rates which is usually correlated to the metadata associated with the pets' listing profiles. 
+
+## Data set
+
+The data set used for this project is made up of 4 csv files that are available through [Kaggle](http://www.kaggle.com).  This is a smaller subset of files that are originally used for a [Kaggle competition](https://www.kaggle.com/c/petfinder-adoption-prediction/data).
+
+These files contain profiles of pets listed for adoption along with metadata such as age, species, breed, gender, color, fur length, maturity size, health information (including sterilization, deworming and vaccination status), location, descriptive text and photo of the pet.
+
+## Project goal summary
+
+This study will firstly attempt to explore the data set and seek to better understand the relationships between the metadata that is associated with the pets' listing profile and the pets' adoption speeds.
+
+The goal of this project is to predict the adoptability of pets - specifically, how quickly would a pet adopted based on the metadata associated with their online profiles. 
+
+## Key steps performed
+
+The data set is firstly explored to ensure it is clean and in a suitable state for experimenting with different methods to build the prediction model. The data set is also visualized in different ways to better understand the characteristics of potential features that could be used as predictors in building the prediction model.
+
+Random forest method is chosen for building this prediction model as it is close to human decision-making process with parameters such as mtry (number of variables randomly sampled as candidates at each split) and ntree (number of trees) that can be tuned to refine the model.  Another reason for choosing random forest is also due to the reason that the predictors of this data set is made up of categorical and numerical types, where some other machine learning algorithms may not be suitable under such circumstances.
+
+# Methods and Analysis
+
+This section describes in detail the process and techniques used for data cleaning, data exploration and visualization, insights gained, and discusses modelling approaches.
+
+## Data source
+
+```{r data-loading, echo=FALSE, message=FALSE, warning=FALSE}
+# Pet adoption speed prediction
+#
+# Goal: Predict how quickly a pet listed online will be adopted or at all
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(tictoc)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+
+# Source of data set: Kaggle - PetFinder.my Adoption Prediction
+# https://www.kaggle.com/c/petfinder-adoption-prediction
+
+#############################################################
+#
+# Set environment and load data
+#
+#############################################################
+
+# set working dir to same folder the script - depending on location of R, Rmd and CSV data files.
+# working_dir <- dirname(rstudioapi::getSourceEditorContext()$path)
+# working_dir <- 'c:/apps/data/r/adopt/script'
+working_dir <- '~/Codes/adopt/script'
+setwd(working_dir)
+
+# place data files in same folder as script: 
+# breed_labels.csv, state_labels.csv, color_labels.csv, train.csv 
+
+# breed_labels:   BreedID	Type	BreedName
+df_breed <- read.csv(file='./breed_labels.csv', header=TRUE, sep=",")
+
+# color_labels:   ColorID	ColorName
+df_color <- read.csv(file='./color_labels.csv', header=TRUE, sep=",")  
+
+# state_labels:   StateID	StateName
+df_state <- read.csv(file='./state_labels.csv', header=TRUE, sep=",")  
+
+# data set:   Type	Name	Age	Breed1	Breed2	Gender	Color1	Color2	Color3	MaturitySize	FurLength	Vaccinated	Dewormed	
+#             Sterilized	Health	Quantity	Fee	State	RescuerID	VideoAmt	Description	PetID	PhotoAmt	AdoptionSpeed
+df_pets <- read.csv(file='./pets.csv', header=TRUE, sep=",") 
+```
+
+There are 4 csv files that make up the data set for this project as described in the previous section
+
+```{r set-counts, echo=FALSE, message=FALSE, warning=FALSE}
+num_pets <- nrow(df_pets)
+num_breed <- nrow(df_breed)
+num_state <- nrow(df_state)
+num_color <- nrow(df_color)
+```
+
+```{r data-set, echo=FALSE, warning=FALSE}
+# create a table to store the data set description
+dataset_desc <- data_frame(Filename = 'pets.csv', 
+                      Description = 'Contains Adoption Speed and pet characteristics',
+                      Count = num_pets)
+dataset_desc <-bind_rows(dataset_desc, 
+                         data_frame(Filename = 'breed_labels.csv',
+                                    Description = 'Contains Type, and BreedName for each BreedID. Type 1 = dog, 2 = cat',
+                                    Count = num_breed))
+dataset_desc <-bind_rows(dataset_desc, 
+                         data_frame(Filename = 'color_labels.csv',
+                                    Description = 'Contains ColorName for each ColorID',
+                                    Count = num_color))
+dataset_desc <-bind_rows(dataset_desc, 
+                         data_frame(Filename = 'state_labels.csv',
+                                    Description = 'Contains StateName for each StateID',
+                                    Count = num_state))
+kp <- 10
+dataset_desc %>% knitr::kable(padding=kp)
+```
+
+## Data fields
+
+The pets.csv data set contains `r num_pets` samples with `r ncol(df_pets)` columns including the dependent column _AdoptionSpeed_ that is to be predicted.
+
+```{r data-structure, warning=FALSE, linewidth=80}
+str(df_pets)
+```
+
+The data fields in from the pets.csv file is described below:
+
+* PetID - Unique hash ID of pet profile
+* AdoptionSpeed - Categorical speed of adoption. Lower is faster. This is the value to predict. See below section for more info.
+* Type - Type of animal (1 = Dog, 2 = Cat)
+* Name - Name of pet (Empty if not named)
+* Age - Age of pet when listed, in months
+* Breed1 - Primary breed of pet (Refer to _df\_breed_)
+* Breed2 - Secondary breed of pet, if pet is of mixed breed (Refer to _df\_breed_)
+* Gender - Gender of pet (1 = Male, 2 = Female, 3 = Mixed, if profile represents group of pets)
+* Color1 - Color 1 of pet (Refer to _df\_color_)
+* Color2 - Color 2 of pet (Refer to _df\_color_)
+* Color3 - Color 3 of pet (Refer to _df\_color_)
+* MaturitySize - Size at maturity (1 = Small, 2 = Medium, 3 = Large, 4 = Extra Large, 0 = Not Specified)
+* FurLength - Fur length (1 = Short, 2 = Medium, 3 = Long, 0 = Not Specified)
+* Vaccinated - Pet has been vaccinated (1 = Yes, 2 = No, 3 = Not Sure)
+* Dewormed - Pet has been dewormed (1 = Yes, 2 = No, 3 = Not Sure)
+* Sterilized - Pet has been spayed / neutered (1 = Yes, 2 = No, 3 = Not Sure)
+* Health - Health Condition (1 = Healthy, 2 = Minor Injury, 3 = Serious Injury, 0 = Not Specified)
+* Quantity - Number of pets represented in profile
+* Fee - Adoption fee (0 = Free)
+* State - State location in Malaysia (Refer to _df\_state_)
+* RescuerID - Unique hash ID of rescuer
+* VideoAmt - Total uploaded videos for this pet
+* PhotoAmt - Total uploaded photos for this pet
+* Description - Profile write-up for this pet. The primary language used is English, with some in Malay or Chinese.
+
+The classes for pet adoption speed is originally set as 0, 1, 2, 3 and 4.  This is associated in a relationship whereby the larger the number, the slower it takes for a pet to get adopted.
+
+To facilitate data visualization for this project, the numbers of the classes are reversed in such a way that the larger the number, the faster the pet is adopted.
+
+```{r flip-classes, echo=FALSE, message=FALSE, warning=FALSE}
+# flip the adoption speed
+# 0 --> 4, 1 --> 3, 2 (unchanged), 3 --> 1, 4 --> 0
+df_pets <- df_pets %>% 
+  mutate(AdoptionSpeed = max(AdoptionSpeed)-AdoptionSpeed)
+```
+
+* 0: No adoption after 100 days
+* 1: 31-90 Days
+* 2: 8-30 Days
+* 3: 1-7 Days
+* 4: Same Day
+
+## Data cleaning
+
+```{r breed-count, echo=FALSE, message=FALSE, warning=FALSE}
+breed_count <- nrow(df_breed)
+```
+
+There are `r breed_count` breed types for all dogs and cats including "Mixed Breed".  Type=1 indicates a dog breed and Type=2 indicates a cat breed.  In the pet profile _df\_pets_ data frame, the BreedID is used in column Breed1 (primary breed) and Breed2 (secondary breed).
+
+```{r breed-display, echo=FALSE}
+tail(df_breed %>% arrange(BreedID))
+head(df_pets %>% select(PetID, Type, Breed1, Breed2), n=10)
+```
+
+It is possible for a pet to be a mix of different breeds and very often the pet profile will either contain different BreedIDs for Breed1 and Breed2; or be listed with BreedID 307 on either one of Breed1 or Breed2.
+Mixed Breed is denoted by BreedID 307 and this ID be used in either column Breed1 or Breed2, or sometimes both.
+
+```{r clean-breed-types, echo=FALSE}
+# Mixed Breed is denoted by BreedID=307 
+df_breed %>% filter(grepl('mix', BreedName, ignore.case = TRUE))
+
+# Mixed breed can be listed in either Breed1 or Breed2, or both
+head(df_pets %>% filter(Breed1==307) %>% select(PetID, Breed1, Breed2))
+head(df_pets %>% filter(Breed2==307) %>% select(PetID, Breed1, Breed2))
+```
+
+A pure breed pet will have Breed1 value associated with a particular BreedID and Breed2 contains 0.  This indicates the pet is a pure breed.  However, if Breed1 has a value of 307, it indicates the pet is a mixed breed and this will be dealt with in the later section.  
+
+There are also several pet profiles with Breed2 associated with a BreedID and whilst having Breed1 containing 0.  This will also be fixed later for consistency.
+
+```{r pure-breed}
+df_pets %>% 
+  filter(Breed1 != 0 & Breed2 == 0) %>% 
+  select(PetID, Breed1, Breed2) %>% head()
+
+df_pets %>% 
+  filter(Breed1 == 0 & Breed2 != 0) %>% 
+  select(PetID, Breed1, Breed2) %>% head()
+```
+
+However, it is good to see that there is no pet profile containing both Breed1 and Breed2 having 0 values. So the data set is clean on this aspect.
+
+```{r breed-no-zero-value}
+df_pets %>% filter(Breed1 == 0 & Breed2 == 0) %>% select(PetID, Breed1, Breed2)
+```
+
+As mentioned above, there are several rows with Breed1 having 0 values and Breed2 having a non-zero value denoting a particular breed type.  The values for Breed1 and Breed2 are interchanged for consistency to have Breed1 to indicate the primary breed, and Breed2 to have value 0 if the pet is a pure breed.
+
+```{r flip-breed1-with-zero, echo=FALSE}
+# data cleaning - there are 5 rows with Breed1 (primary breed) marked as 0 (unknown),
+# and Breed2 (secondary breed) != 0 denoting a particular breed in the data set.
+
+# this has to be corrected by flipping the values of Breed1 and Breed2 
+df_pets <- df_pets %>% 
+  mutate(Breed1_temp=ifelse((Breed1==0),Breed2,Breed1),
+         Breed2_temp=ifelse((Breed1==0),0,Breed2),
+         Breed1=Breed1_temp,
+         Breed2=Breed2_temp)
+# check: no more rows with Breed1==0
+df_pets %>% filter(Breed1==0) %>% select(PetID, Breed1, Breed2)
+# drop temporary columns
+df_pets <- within(df_pets, rm('Breed1_temp','Breed2_temp'))
+```
+
+There are also pets listed with both Breed1 (primary breed) and Breed2 (secondary breed) having the same value. In such case, Breed2 will be set to zero.  A new column Breed_Mix is also introduced to the _df\_pets_ data frame to indicate if the pet is a mixed breed or pure breed.
+
+```{r breed1-breed2-both-same-value, echo=FALSE}
+# there are also pets listed as having Breed1 (primary breed) == Breed2 (secondary breed)
+# in such case, where Breed1 == Breed2, set Breed2 == 0
+# after that, set Breed_Mix = Mixed if Breed2 != 0 or Breed1/Breed2 == 307; else Pure
+df_pets %>% filter(Breed1==Breed2) %>% 
+  select(PetID, Breed1, Breed2) %>% 
+  head(n=10)
+df_pets <- df_pets %>%
+  mutate(Breed2=ifelse((Breed1==Breed2),0,Breed2),
+         Breed_Mix = ifelse((Breed2!=0 | Breed1==307 | Breed2==307), 
+                            'Mixed', 'Pure'))
+# check: no rows with Breed1==Breed2
+df_pets %>% filter(Breed1==Breed2) %>% select(PetID, Breed1, Breed2)
+```
+
+In addition, another 3 new columns are added to the df_pets data frame to facilitate data visualization in the next section. 
+
+* Breed1_Name - label for Breed1
+* Breed2_Name - label for Breed2
+* Breed_Combined - combined labels for Breed1 and Breed2
+
+```{r breed-labels, echo=FALSE}
+# define breed labels
+label_breed <- as.character(df_breed$BreedName)
+
+# combine Breed1 and Breed2 with name
+df_pets <- df_pets %>%
+  mutate(Breed1_Name = ifelse((Breed1!=0),label_breed[Breed1],NA),
+         Breed2_Name = ifelse((Breed2!=0),label_breed[Breed2],NA)) %>%
+  rowwise() %>%
+  mutate(Breed_Combined = toString(sort(c(unique(c(Breed1_Name, 
+                                                   Breed2_Name))))))
+df_pets %>% 
+  select(Breed1, Breed2, Breed1_Name, Breed2_Name, Breed_Combined) %>% 
+  head(n=10)
+```
+
+There is a Description column that contains text description of the listed pet.  The effects of text semantics is outside the scope of this project.  However, another new column Desc_WordCount is added to _df\_pets_ data frame that store the number of words in the description to facilitate data visualization in the following sections.
+
+```{r desc-word-count, echo=TRUE}
+# add word count of Description
+df_pets <- df_pets %>% 
+  mutate(Description = as.character(Description),
+         Desc_WordCount = sapply(strsplit(Description, " "), length))
+```
+
+```{r str-after-clean-add-cols}
+# df_pets data structure
+class(df_pets$Desc_WordCount)
+str(df_pets$Desc_WordCount)
+```
+
+## Data exploration, visualization and insights gained
+
+In this section, the data set is explored in detail and visualized to better understand the data set and the characteristics of metadata that is associated with the pet profiles.
+
+```{r quick-look-at-data-frames}
+head(df_breed)
+head(df_color)
+head(df_state)
+```
+
+```{r quick-look-df_pets, warning=FALSE}
+as_tibble(head(df_pets[1:10]))
+as_tibble(head(df_pets[11:18]))
+head(select(df_pets, 19,20, 22, 23,29))
+as_tibble(head(df_pets[24:28]))
+as_tibble(head(df_pets[21]))
+```
+
+```{r define-plot-parameters, echo=FALSE}
+# plot parameters
+alpha_bar <- 0.8
+alpha_point <- 0.5
+```
+
+### Adoption speed
+
+A small fraction of pets get adopted on the same day it was listed. This could be due to chance (a lucky pet or a lucky adopter) or people just tend to like "newly" listed pets sometimes.  The other 4 classes where pets get adopted between 1 to 90 days, and sometimes not adopted at all after 100 days have a somewhat closer distribution with each other.  
+
+```{r plot-adoption-speed, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# plot of adoption speed
+#
+# Pet adoption speed is defined by how quickly, if at all, a pet is adopted
+# The values are determined in the following way: 
+# 4 - Pet was adopted on the same day as it was listed. 
+# 3 - Pet was adopted between 1 and 7 days (1st week) after being listed. 
+# 2 - Pet was adopted between 8 and 30 days (1st month) after being listed. 
+# 1 - Pet was adopted between 31 and 90 days (2nd & 3rd month) after being listed. 
+# 0 - No adoption after 100 days of being listed. (There are no pets in this 
+#     dataset that waited between 90 and 100 days).
+adoption_speed_desc <- c('0'='No adoption\n after 100 days',
+                         '1'='31-90 Days',
+                         '2'='8-30 Days',
+                         '3'='1-7 Days', 
+                         '4'='Same Day')
+
+# plot adoption speed
+adoption_speed_count <- df_pets %>%
+  group_by(AdoptionSpeed) %>%
+  summarise(Count = n()) %>%
+  mutate(AdoptionSpeed=as.character(AdoptionSpeed),
+         Rate=Count/nrow(df_pets)) %>%
+  select(AdoptionSpeed, Count, Rate) %>%
+  arrange(desc(AdoptionSpeed))
+adoption_speed_count
+adoption_speed_count %>%
+  ggplot(aes(x=AdoptionSpeed, y=Count)) +
+  geom_bar(stat = "identity", alpha=.8, 
+           fill=rainbow(n=length(adoption_speed_count$AdoptionSpeed))) +
+  ggtitle('Adoption Speed') +
+  xlab('Adoption Speed') +
+  ylab('Count') + 
+  scale_x_discrete(labels = adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  coord_flip() 
+```
+
+### Species / Type
+
+Cats appear to have a higher adoption chance than dogs within the first week of listing.  There are more dogs than cats that are not adopted after 100 days.
+
+```{r plot-type, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# define species label: 1=Dog, 2=Cat
+label_species <- c('Dog', 'Cat')
+
+# there are slightly less cats listed for adoption compared to dogs
+species_count <- df_pets %>%
+  group_by(Type) %>%
+  summarise(Count = n()) %>%
+  mutate(Species = label_species[Type]) %>%
+  select(Species, Count) 
+species_count
+dog_cat_ratio <- species_count[species_count$Species=='Dog',]$Count/species_count[species_count$Species=='Cat',]$Count
+# cat("dog to cat ratio: ", dog_cat_ratio)
+dog_cat_pct <- round((dog_cat_ratio - 1) * 100, 1)
+caption_dog_cat <- paste('There are ', dog_cat_pct, '% more dogs than cats', sep='')
+# caption_dog_cat
+
+# plot of species count: 1=Dog, 2=Cat
+pet_species <- df_pets %>% 
+  mutate(Species = label_species[Type]) 
+pet_species %>%
+  ggplot(aes(x=Species, fill=Species)) +
+  geom_bar(position='dodge', alpha=alpha_bar) +
+  ggtitle('Species') +
+  labs(caption = caption_dog_cat) +
+  xlab('Species') +
+  ylab('Count') + 
+  theme(plot.title = element_text(hjust = 0.5),
+        plot.caption = element_text(hjust = 0.5, face = "italic"),
+        legend.position = 'hide') 
+```
+
+```{r plot-type-2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# adoption speed by species
+# >> cats appear to have a higher adoption speed than dogs on the first 7 days
+# >> there are more dogs than cats that are not adopted after 100 days
+pet_species %>%
+  mutate(AdoptionSpeed=as.character(AdoptionSpeed)) %>%
+  ggplot(aes(x=AdoptionSpeed, fill=Species)) +
+  geom_bar(position='dodge', alpha=alpha_bar) +
+  ggtitle('Adoption Speed by Species') +
+  xlab('Adoption Speed') +
+  ylab('Count') + 
+  scale_x_discrete(labels = adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'bottom',
+        legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt')) +
+  coord_flip() 
+
+avg_speed_species <- pet_species %>%
+  group_by(Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_species)
+```
+
+However, there are less cats are available for adoption compared to dogs. There are more dogs (+`r dog_cat_pct`%) than cats.  Cats also have a faster average adoption speed, perhaps people prefer cats to dogs.  We shall see in the following sections.
+
+### Named and unnamed pets
+
+Named pets appear to have a higher chance of being adopted on the same day it is listed.
+
+```{r named-pets, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# pets with name
+# pets with no name has column Name = "" or sometimes contain string 'no name' 
+
+# pets with Name column mentioning the pet has no name or empty "" is about 9% 
+# >> this proportion of pets with no name is negligible
+# >> some people filled this Name field with pet description like colour, gender 
+# and other information 
+num_no_name <- df_pets %>% 
+  filter(grepl('no name',Name, ignore.case = TRUE) | Name == "") %>% 
+  select(Name) 
+top_n(num_no_name, n=10)
+# nrow(df_pets)
+ratio_no_name <- nrow(num_no_name)/nrow(df_pets)
+# ratio_no_name
+
+label_named <- c('Named', 'No name')
+
+pet_named <- df_pets %>% 
+  mutate(HasName = ifelse((grepl('no name',Name, ignore.case = TRUE) | Name == ""),
+                          'No name', 'Named')) 
+
+pet_named %>%
+  ggplot(aes(x=HasName, fill=HasName)) +
+  geom_bar(position='dodge', alpha=alpha_bar) +
+  ggtitle('Pet with and without name') +
+  xlab('') +
+  ylab('Count') + 
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'hide') 
+```
+
+```{r named-pets-2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# plot named/unnamed pets with adoption speed 
+# >> named pets appear to have a higher chance of being adopted on the same day it is listed 
+# >> after that, the name does not appear to have effect on adoption speed
+pet_named %>%
+  mutate(AdoptionSpeed=as.character(AdoptionSpeed)) %>%
+  ggplot(aes(x=AdoptionSpeed, fill=HasName)) +
+  geom_bar(position = 'dodge', alpha=alpha_bar) +
+  ggtitle('Adoption speed for pets with name / without name') +
+  xlab('Adoption Speed') +
+  ylab('Count') + 
+  scale_x_discrete(labels = adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'bottom',
+        legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt')) +
+  coord_flip() 
+
+# average adoption speed of pets listed with / without name
+avg_speed_name <- pet_named %>%
+  group_by(HasName) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(HasName, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+```
+
+```{r named-avg-speed}
+head(avg_speed_name)
+```
+
+After that, the name does not appear to have effect on adoption speed of the pet.  However, only `r round(ratio_no_name*100)`% of pets are listed without names.  On average, the adoption speed of pets listed with and without name is about the same.  Pets listed with or without name do not have much effect on adoption speed.
+
+### Gender 
+
+Gender can be male, female or mixed (if the pet profile consists of a group of pets of different genders).
+
+```{r gender, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# define gender labels: 1 = Male, 2 = Female, 3 = Mixed, if profile represents group of pets
+label_gender <- c('Male', 'Female', 'Mixed group of pets')
+
+# Gender 
+# (1 = Male, 2 = Female, 3 = Mixed, if profile represents group of pets)
+# There is slightly more female pets in the population.
+
+# plot of gender count
+# >> more females in the population 
+pet_gender <- df_pets %>% 
+  mutate(Gender=label_gender[Gender]) 
+pet_gender %>%
+  ggplot(aes(x=Gender, fill=Gender)) +
+  geom_bar(position='dodge', alpha=alpha_bar) +
+  ggtitle('Gender') +
+  xlab('Gender') +
+  ylab('Count') + 
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'hide')
+```
+
+```{r gender-count, echo=FALSE, message=FALSE, warning=FALSE}
+# gender count - to use for calculating adoption rate by gender in each adoption_speed class 
+gender_count <- df_pets %>%
+  group_by(Gender) %>%
+  summarise(Count=n()) %>%
+  mutate(PetGender=label_gender[Gender]) %>%
+  arrange(Gender)
+gender_count
+
+# example: to get the total 1=Male; 2=Female; 3=Mixed
+# gender_count[gender_count$Gender==1,]$Count
+# gender_count[gender_count$Gender==2,]$Count
+# gender_count[gender_count$Gender==3,]$Count
+# Mixed Gender make up ~ 14% of df_pets 
+gender_mixed <- gender_count[gender_count$Gender==3,]$Count/sum(gender_count$Count)
+# gender_mixed
+```
+
+```{r gender-2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# >> Female pets appear to be adopted faster, or is it really the case ? 
+pet_gender %>%
+  mutate(AdoptionSpeed=as.character(AdoptionSpeed)) %>%
+  ggplot(aes(x=AdoptionSpeed, fill=Gender)) +
+  geom_bar(position = 'dodge', alpha=alpha_bar) +
+  ggtitle('Adoption speed by pet gender') +
+  xlab('Adoption Speed') +
+  ylab('Count') + 
+  scale_x_discrete(labels = adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'bottom',
+        legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt')) +
+  coord_flip() 
+```
+
+```{r gender-3, echo=FALSE, message=FALSE, warning=FALSE}
+
+# calculate average adoption speed by gender for each adoption_speed class
+# >> each Gender appear to have average adoption speed despite the previous plot
+avg_speed_gender <- pet_gender %>%
+  group_by(Gender) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(Gender, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_gender)
+```
+
+```{r gender-4, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# plot adoption rate by gender for each adoption_speed class
+avg_speed_gender %>% 
+  ggplot() + 
+  geom_point(aes(x=Gender,y=AvgSpeed,size=Count), alpha=0.5) +
+  ggtitle("Average adoption speed across different genders") +
+  xlab("") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white")) 
+```
+
+Multiple pets listed as a group entry makes up `r round(gender_mixed*100)`% of the data set.  Female pets appear to be more popular of being adopted. However, there are more female pets in the population.  The average adoption speed by gender for each adoption_speed class shows all three classes of gender having similar average adoption speed.
+
+### Age
+
+Most pets are listed for adoption when young, mostly between 0-4 months. There is also a good portion of pets older than 12 months that are listed in multiples of 12 (denoting 12, 24, 36 months) which suggests the person who list the pets for adoption do not bother to describe the pet's age to the month, and rather make a direct year to month conversion.
+
+```{r age, echo=FALSE, warning=FALSE, error=FALSE}
+# distribution of age
+# >> most pets listed for adoption are young, mostly between 0-4 months
+# there's a good portion of pets older than 12 months that are in multiples of 12 
+# (i.e. 12, 24, 36 months) which suggests the person who list the pets for adoption
+# do not bother to describe the pet's age to the month, and rather make a direct year to
+# month conversion
+pet_age <- df_pets %>%
+  mutate(Species = label_species[Type]) %>% 
+  group_by(Species, Age) %>%
+  summarise(Count=n()) %>%
+  arrange(desc(Count))
+head(pet_age, n=20)
+```
+
+```{r age-2, echo=FALSE, warning=FALSE, error=FALSE, fig.margin=TRUE}
+
+pet_age %>% 
+  ggplot() + 
+  geom_point(aes(x=Age, y=Count, color=Species), alpha=0.5) + 
+  ggtitle("Pets for adoption across different ages") + 
+  scale_y_log10() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Ages when listed in months") +
+  ylab("Number of pets") 
+```
+
+```{r age-3, echo=FALSE, warning=FALSE, error=FALSE, fig.margin=TRUE}
+
+# average adopt_speed (continuous scale) by age (age when pets listed in months)
+avg_speed_age <- df_pets %>%
+  mutate(Species = label_species[Type]) %>% 
+  group_by(Species, Age) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(Species, Age, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed),Count)
+top_n(avg_speed_age, n=20)
+avg_speed_age %>% 
+  ggplot() + 
+  geom_point(alpha=0.5, aes(x=Age,y=AvgSpeed,size=Count,color=Species)) +
+  ggtitle("Average adoption speed across ages") +
+  xlab("Ages when listed in months") +
+  ylab("Average adoption speed") + 
+  scale_x_sqrt(breaks=c(seq(0,12,2),seq(12,max(avg_speed_age$Age),12))) +
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'bottom',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white")) 
+```
+
+Many young pets below 12 months are quickly adopted and mostly adopted.  Some pets older than 24 months end up not adopted after 100 days.
+
+```{r older-pets, echo=FALSE}
+# pets older than 24 months that are adopted within 1 week
+pets_older_2yr_adopted_1wk <- df_pets %>%
+  filter(Age > 24) %>% 
+  filter(AdoptionSpeed %in% c(3,4))
+```
+
+It is interesting to see that there are some (2%) pets older than 24 moths are adopted within 1 week.  This is a small percentage (`r round(nrow(pets_older_2yr_adopted_1wk)*100/nrow(df_pets))`%) and can be ignored. 
+
+### Breed
+
+```{r breed-mix-pure, echo=FALSE, warning=FALSE}
+# plot count of adoption speed by pure breed vs. mixed breed
+
+# distribution of pure and mixed breed (6651 are mixed breed)
+# m1 <- nrow(df_pets %>% filter(Breed1==307))
+# m2 <- nrow(df_pets %>% filter(Breed2==307))
+# m3 <- nrow(df_pets %>% filter(Breed1==307 & Breed2==307))
+# cat(m1,m2,m3,m1+m2+m3,m1+m2-m3)
+
+breeds <- df_pets %>% 
+  mutate(Species = label_species[Type]) %>%
+  group_by(Breed_Mix, Species) %>%
+  summarise(Count=n()) %>%
+  select(Breed_Mix, Species, Count)
+breeds
+
+# total pets: nrow(df_pets) = 14993
+# validation check
+# sum(breeds$Count)
+# nrow(df_pets)
+
+# half of the pets are pure breed
+# with cats being mostly pure breeds (81%), while dogs are only 14% pure breeds
+pure_breed_pet <- sum(breeds[(breeds$Breed_Mix=='Pure'),]$Count)/
+  sum(breeds$Count)
+# pure_breed_pet
+
+pure_breed_cat <- breeds[(breeds$Species=='Cat' & breeds$Breed_Mix=='Pure'),]$Count/
+  sum(breeds[(breeds$Species=='Cat'),]$Count)
+# pure_breed_cat
+
+pure_breed_dog <- breeds[(breeds$Species=='Dog' & breeds$Breed_Mix=='Pure'),]$Count/
+  sum(breeds[(breeds$Species=='Dog'),]$Count)
+# pure_breed_dog
+```
+
+There are `r round(pure_breed_pet*100)`% of pets that are pure breeds - with `r round(pure_breed_cat*100)`% being pure breed cats and `r round(pure_breed_cat*100)`% being pure breed dogs.  
+
+```{r plot-breed-mix, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# average adopt_speed (continuous scale) by breed1, breed2 
+# >> adopters appear to prefer pure breed (dog) to mixed breed (dog) with more pure breed (dog)
+# being mostly adopted within 30 days
+# > most cats are pure breed, and pure/mixed breed of cats do not have much effect on the
+# adoption_speed for cat
+df_pets %>%
+  mutate(Species = label_species[Type], 
+         PetGender=label_gender[Gender], 
+         Gender=as.character(Gender),
+         AdoptionSpeed=as.character(AdoptionSpeed)) %>% 
+  ggplot(aes(x=AdoptionSpeed, fill=Species)) +
+  geom_bar(position = 'stack', alpha=alpha_bar) +
+  facet_grid(~Breed_Mix) +
+  ggtitle('Adoption speed by breed') +
+  xlab('Adoption Speed') +
+  ylab('Count') + 
+  scale_x_discrete(labels = adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'bottom',
+        legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt')) +
+  coord_flip() 
+```
+
+```{r plot-breed-mix-2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# calculate average adoption speed by pure/mixed breed for each adoption_speed class
+pet_breed_mix <- df_pets %>% 
+  mutate(Species = label_species[Type],
+         Breed_Species = paste(Breed_Mix, 'breed -', Species)) 
+
+pet_breed_mix %>%
+  ggplot(aes(x=Breed_Species, fill=Breed_Species)) +
+  geom_bar(alpha=alpha_bar) +
+  ggtitle('Breed mix') +
+  xlab('') +
+  ylab('Count') + 
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'right',
+        legend.title = element_blank()) +
+  coord_flip()
+```
+
+```{r plot-breed-mix-3, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+pet_breed_mix %>%
+  mutate(AdoptionSpeed=as.character(AdoptionSpeed)) %>%
+  ggplot(aes(x=AdoptionSpeed, fill=Breed_Species)) +
+  geom_bar(position = 'dodge', alpha=alpha_bar) +
+  ggtitle('Adoption speed by mixed/pure breed and species') +
+  xlab('Adoption Speed') +
+  ylab('Count') + 
+  scale_x_discrete(labels = adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'right',
+        legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt')) +
+  coord_flip() 
+```
+
+```{r plot-breed-mix-4, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# calculate average adoption speed by gender for each adoption_speed class
+# >> each Gender appear to have average adoption speed despite the previous plot
+avg_speed_breed_mix <- pet_breed_mix %>%
+  group_by(Breed_Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(Breed_Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed), desc(Count))
+head(avg_speed_breed_mix, n=20)
+
+avg_speed_breed_mix %>% 
+  ggplot() + 
+  geom_point(aes(x=Breed_Species,y=AvgSpeed,size=Count), alpha=0.5) +
+  ggtitle("Average adoption speed across pure / mixed breeds") +
+  xlab("") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white")) 
+```
+
+Pure breed dogs appear to have faster average adoption speed than pure breed cats, followed by mixed breed dogs.
+
+It is also interesting to note that most cats are pure breed, and there's a small number of mixed breed cats not adopted for > 100 days.
+
+```{r plot-avg-speed-breed, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# see if there's popular breed with fast adoption speed
+
+# different type of pure/mixed breeds
+breed_type_count <- length(unique(df_pets$Breed_Combined))
+
+# distribution of pet breeds with count > x
+df_pets %>%
+  group_by(Breed_Combined) %>% 
+  summarise(Count=n()) %>%
+  mutate(Breed_Combined=fct_reorder(Breed_Combined,desc(Count))) %>% 
+  filter(Count>50) %>%
+  ggplot(aes(x=Breed_Combined, y=Count, fill=Breed_Combined)) +
+  geom_bar(position='dodge', stat='identity', alpha=alpha_bar) +
+  ggtitle('Breed distribution') +
+  xlab('Breeds') +
+  ylab('Count') + 
+  # scale_y_log10() +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'hide') +
+  coord_flip()
+```
+
+```{r plot-avg-speed-breed-2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# average adoption speed by breed
+avg_speed_breed <- df_pets %>%
+  mutate(Species=label_species[Type]) %>%
+  group_by(Breed_Combined, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(Breed_Combined, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_breed, n=20)
+
+# plot average adoption speed by breed for count > x
+avg_speed_breed %>%
+  filter(Count>10) %>%
+  ggplot() + 
+  geom_point(aes(y=AvgSpeed,x=Breed_Combined,size=Count,color=Species), 
+             alpha=0.5) +
+  ggtitle("Average adoption speed across breeds") +
+  xlab("Breeds") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits=c(0,4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(), # element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major.y = element_line(size = 0.2, linetype = 'solid',
+                                          colour = "grey"), 
+        panel.grid.minor.y = element_line(size = 0.1, linetype = 'solid',
+                                          colour = "white")) 
+```
+
+There are `r breed_type_count` of mixed and pure breeds of cats and dogs. There appear to be a few breeds are popular ones and having faster adoption speed than the rest.  There are also some breeds that show slower adoption speed.
+
+### Color
+
+There are 7 color types with respective color labels stated in _df\_color_ data frame.  Pets can be listed as single color whereby the color is indicated in column Color1 with columns Color2 and Color3 having zero value.  Mixed colored pets are listed with Color2 and Color3 having values in _df\_color_ data frame.
+
+```{r pet-color}
+df_color
+```
+
+Two new columns (Color and Color_Mix) are defined to facilitate data visualization of pet color distributions.  However these two columns are not used to build the prediction model.
+
+```{r def-color-label, echo=FALSE}
+# define colour labels
+label_color <- as.character(df_color$ColorName)
+# label_color
+
+# colours
+# > there are 7 color types (ColorID=1:7 with respective color labels stated in df_color
+# > pets can be listed with a maximum of three colors types
+# sum(df_pets$Color1 == 0)
+# sum(df_pets$Color2 == 0)
+# sum(df_pets$Color3 == 0)
+# > some pets are listed with ColorID == 0 in Color2 and Color3 
+# and this can be cleaned and changed to NA or filter out where == 0
+
+# single / mixed color
+color_single <- df_pets %>%
+  filter(Color2 == 0 & Color3 == 0)
+
+color_mixed <- df_pets %>%
+  filter(Color2 != 0 | Color3 != 0)
+
+# extract different color combinations
+pet_color <- df_pets %>%
+  mutate(Color1 = ifelse((Color1!=0),label_color[Color1],NA),
+         Color2 = ifelse((Color2!=0),label_color[Color2],NA),
+         Color3 = ifelse((Color3!=0),label_color[Color3],NA),
+         Species = label_species[Type]) %>%
+  rowwise() %>%
+  mutate(Color = toString(sort(c(unique(c(Color1, Color2, Color3))))),
+         Color_Mix = ifelse((is.na(Color2) & is.na(Color3)),'Single','Mixed')) %>%
+  select(PetID, Color, Color_Mix, Color1, Color2, Color3, Species, Gender, AdoptionSpeed)
+
+# number of unique color combinations
+unique_color_combi <- length(unique(pet_color$Color))
+```
+
+There are in total `r unique_color_combi` unique color combinations.
+
+```{r color-distribution, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# color distribution
+# > most pets listed are Brown, and Black & White; followed by Black and Black & Brown
+pet_color %>% 
+  group_by(Color) %>% 
+  summarise(Count=n()) %>%
+  mutate(Color=fct_reorder(Color,desc(Count))) %>% 
+  top_n(25) %>%
+  ggplot(aes(x=Color, y=Count, fill=Color)) +
+  geom_bar(position='dodge', stat='identity', alpha=alpha_bar) +
+  ggtitle('Color combination distribution') +
+  xlab('Color combinations') +
+  ylab('Count') + 
+  # scale_y_log10() +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'hide') +
+  coord_flip()
+```
+
+Most pets listed are listed have primary color of pure brown, and mix of black and white.  This is followed by pure black and mix of black and brown.
+
+```{r color-distribution-for-3-colors-a, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# distribution of pets by main color (Color1) shows Black and Brown being the dominant colors
+# df_pets %>% 
+#   mutate(Species = label_species[Type], Color1=label_color[Color1]) %>
+pet_color %>%
+  filter(!is.na(Color1)) %>%
+  group_by(Color1, Species) %>% 
+  summarise(Count=n()) %>%
+  ggplot(aes(x=Color1, y=Count, fill=Species)) +
+  geom_bar(position='dodge', stat='identity', alpha=alpha_bar) +
+  ggtitle('Color1 combination distribution by main color (Color1)') +
+  xlab('Color1') +
+  ylab('Count') + 
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'bottom') +
+  coord_flip()
+```
+
+```{r color-distribution-color1, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# average adoption speed by main color (Color1)
+# > Most pets are listed with Black and Brown as main color
+# however, all main colors (Color1) appear to have similar average adoption speed 
+avg_speed_color1 <- pet_color %>%
+  filter(!is.na(Color1)) %>%
+  group_by(Color1, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  filter(!is.na(Color1)) %>%
+  select(Color1, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_color1, n=20)
+
+avg_speed_color1 %>% 
+  ggplot() + 
+  geom_point(aes(x=Color1,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across main color (Color1)") +
+  xlab("Main color (Color1)") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white")) 
+```
+
+```{r color-distribution-color2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# average adoption speed by second color (Color2)
+# > all second colors (Color2) appear to have similar average adoption speed 
+avg_speed_color2 <- pet_color %>%
+  filter(!is.na(Color2)) %>%
+  group_by(Color2, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  filter(!is.na(Color2)) %>%
+  select(Color2, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_color2, n=20)
+avg_speed_color2 %>% 
+  ggplot() + 
+  geom_point(aes(x=Color2,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across second color (Color2)") +
+  xlab("Second color (Color2)") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white")) 
+```
+
+```{r color-distribution-color3, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# average adoption speed by third color (Color3)
+# > all third colors (Color3) appear to have similar average adoption speed 
+avg_speed_color3 <- pet_color %>%
+  filter(!is.na(Color3)) %>%
+  group_by(Color3, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  filter(!is.na(Color3)) %>%
+  select(Color3, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_color3, n=20)
+avg_speed_color3 %>% 
+  ggplot() + 
+  geom_point(aes(x=Color3,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across third color (Color3)") +
+  xlab("Third color (Color3)") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white")) 
+```
+
+```{r color-distribution-color-all, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# average adoption speed for all colors combined
+avg_speed_color_all <- pet_color %>%
+  rowwise() %>%
+  mutate(Color_All = toString(sort(c(unique(c(Color1, Color2, Color3)))))) %>%
+  group_by(Color_All, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  filter(!is.na(Color_All)) %>%
+  select(Color_All, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_color_all, n=20)
+avg_speed_color_all %>% 
+  ggplot() + 
+  geom_point(aes(x=Color_All,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across all color combination") +
+  xlab("All color combinations") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major.y = element_line(size = 0.2, linetype = 'solid',
+                                          colour = "grey"), 
+        panel.grid.minor.y = element_line(size = 0.1, linetype = 'solid',
+                                          colour = "white"))
+
+```
+
+The following plot shows the distribution of single and mixed colored pets.  Pets listed with mixed colors  more than double of the single colored ones.
+
+```{r color-single-mixed, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# distribution of pets by single/mixed colors
+pet_color %>%
+  ggplot(aes(x=Color_Mix, fill=Color_Mix)) +
+  geom_bar(alpha=alpha_bar) +
+  ggtitle('Color mix') +
+  xlab('') +
+  ylab('Count') + 
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'right',
+        legend.title = element_blank()) +
+  coord_flip()
+```
+
+```{r color-single-mixed-2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# average adoption speed by single/mixed color
+avg_speed_color_mix <- pet_color %>%
+  group_by(Color_Mix, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(Color_Mix, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_color_mix, n=20)
+avg_speed_color_mix %>% 
+  ggplot() + 
+  geom_point(aes(x=Color_Mix,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across single / mixed color pets") +
+  xlab("") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white")) 
+```
+
+The distribution of average adoption speed of pets having primary color (Color1) appear to have similar average adoption speed.  The same observation holds for second color (Color2) and third color (Color3). That is also the case when all colors are combined.  Most color combinations somewhat have similar average adoption speed, with some random small number of pets being adopted faster and slower.  Pet color does not seem to affect the adoption speed.
+
+### Maturity size
+
+Maturity size of pets in this data set ranges from _small_, _medium_, _large_ up to _extra large_ indicated with values from 1 to 4. The data set documentation states pets with unspecified maturity size are indicated with value 0.  A quick check on the data set shows that all pets listed has maturity size specified.
+
+```{r pet-maturity-size-clean}
+nrow(df_pets %>% filter(MaturitySize==0))
+```
+
+Pets listed for adoption are mostly those with maturity size of _medium_, followed by _small_.  The adoption speed for different maturity sizes shows the same distribution which could be due to the distribution of pet numbers in each maturity size categories.  The average adoption speed across the maturity sizes show that _extra large_ dogs have faster adoption speed on average.  However, there are not many such dogs in the sample.
+
+```{r pet-maturity-size-distribution, echo=FALSE, message=FALSE, warrning=FALSE, fig.margin=TRUE}
+# maturity size
+label_maturity_size = c("1"="Small", "2"="Medium", "3"="Large", 
+                        "4"="Extra Large", "0"="Not Specified")
+
+pet_size <- df_pets %>%
+  mutate(MaturitySize = label_maturity_size[MaturitySize],
+         Species = label_species[Type]) %>%
+  select(PetID, Species, MaturitySize, AdoptionSpeed)
+
+pet_size %>%
+  ggplot(aes(x=MaturitySize, fill=MaturitySize)) +
+  geom_bar(position='dodge', alpha=alpha_bar) +
+  ggtitle('Pet maturity size') +
+  xlab('') +
+  ylab('Count') + 
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'hide') 
+```
+
+```{r pet-maturity-size-distribution-2, echo=FALSE, message=FALSE, warrning=FALSE, fig.margin=TRUE}
+
+# plot pet maturity size with adoption speed 
+pet_size %>%
+  mutate(AdoptionSpeed=as.character(AdoptionSpeed)) %>%
+  ggplot(aes(x=AdoptionSpeed, fill=MaturitySize)) +
+  geom_bar(position = 'dodge', alpha=alpha_bar) +
+  ggtitle('Adoption speed across pet maturity sizes') +
+  xlab('Adoption Speed') +
+  ylab('Count') + 
+  scale_x_discrete(labels = adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'bottom',
+        legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt')) +
+  coord_flip() 
+```
+
+```{r pet-maturity-size-distribution-3, echo=FALSE, message=FALSE, warrning=FALSE, fig.margin=TRUE}
+
+# average adoption speed across pet maturity sizes
+avg_speed_size <- pet_size %>%
+  group_by(MaturitySize, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(MaturitySize, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_size)
+```
+
+```{r pet-maturity-size-distribution-3-cont, echo=FALSE, message=FALSE, warrning=FALSE, fig.margin=TRUE}
+avg_speed_size %>% 
+  ggplot() + 
+  geom_point(aes(x=MaturitySize,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across maturity sizes") +
+  xlab("Maturity Size") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white"))
+```
+
+### Fur length
+
+Fur length of pets in this data set ranges from _short_, _medium_ up to _long_ indicated with values from 1 to 3. The data set documentation states pets with unspecified fur length are indicated with value 0.  A quick check on the data set shows that all pets listed has fur length specified.
+
+```{r pet-fur-clean}
+nrow(df_pets %>% filter(FurLength==0))
+```
+
+Most pets listed for adopted has _short_ fur, followed by pets with _medium_ fur length.  It is not surprising to see the same distribution of adoption speed to show the same.  The average adoption speed across the fur lengths show that cats and dogs with _long_ furs have faster adoption speed on average.
+
+```{r pet-fur-distribution, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# fur length
+label_fur = c("1"="Short", "2"="Medium", "3"="Long", "0"="Not Specified")
+
+pet_fur <- df_pets %>%
+  mutate(FurLength = label_fur[FurLength],
+         Species = label_species[Type]) %>%
+  select(PetID, Species, FurLength, AdoptionSpeed)
+
+pet_fur %>%
+  ggplot(aes(x=FurLength, fill=FurLength)) +
+  geom_bar(position='dodge', alpha=alpha_bar) +
+  ggtitle('Pet fur length') +
+  xlab('') +
+  ylab('Count') + 
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'hide') 
+```
+
+```{r pet-fur-distribution-2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# plot pet fur length with adoption speed 
+pet_fur %>%
+  mutate(AdoptionSpeed=as.character(AdoptionSpeed)) %>%
+  ggplot(aes(x=AdoptionSpeed, fill=FurLength)) +
+  geom_bar(position = 'dodge', alpha=alpha_bar) +
+  ggtitle('Adoption speed across pet fur length') +
+  xlab('Adoption Speed') +
+  ylab('Count') + 
+  scale_x_discrete(labels = adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'bottom',
+        legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt')) +
+  coord_flip() 
+```
+
+```{r pet-fur-distribution-3, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# average adoption speed across pet fur lengths
+avg_speed_fur <- pet_fur %>%
+  group_by(FurLength, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(FurLength, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_fur)
+avg_speed_fur %>% 
+  ggplot() + 
+  geom_point(aes(x=FurLength,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across fur lengths") +
+  xlab("Fur Length") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white"))
+```
+
+### Vaccination status
+
+Vaccination status of pets in this data set can be _Yes_, _No_ or _Not Sure_ with values from 1 to 3.
+
+```{r pet-vaccinated, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# vaccinated
+label_vaccinated = c("1"="Yes", "2"="No", "3"="Not Sure")
+
+pet_vaccinated <- df_pets %>%
+  mutate(Vaccinated = label_vaccinated[Vaccinated],
+         Species = label_species[Type]) %>%
+  select(PetID, Species, Vaccinated, AdoptionSpeed)
+
+pet_vaccinated %>%
+  ggplot(aes(x=Vaccinated, fill=Vaccinated)) +
+  geom_bar(position='dodge', alpha=alpha_bar) +
+  ggtitle('Pet vaccinated') +
+  xlab('') +
+  ylab('Count') + 
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'hide') 
+```
+
+```{r pet-vaccinated-2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# plot pet vaccination status with adoption speed 
+pet_vaccinated %>%
+  mutate(AdoptionSpeed=as.character(AdoptionSpeed)) %>%
+  ggplot(aes(x=AdoptionSpeed, fill=Vaccinated)) +
+  geom_bar(position = 'dodge', alpha=alpha_bar) +
+  ggtitle('Adoption speed across pet vaccination status') +
+  xlab('Adoption Speed') +
+  ylab('Count') + 
+  scale_x_discrete(labels = adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'bottom',
+        legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt')) +
+  coord_flip() 
+```
+
+```{r pet-vaccinated-3, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# average adoption speed across pet vaccination status 
+avg_speed_vaccinated <- pet_vaccinated %>%
+  group_by(Vaccinated, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(Vaccinated, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_vaccinated)
+avg_speed_vaccinated %>% 
+  ggplot() + 
+  geom_point(aes(x=Vaccinated,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across vaccination status") +
+  xlab("Vaccination Status") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white"))
+```                                        
+
+Most pets appear to be not vaccinated.  However, the numbers of vaccinated pets are close to the those not vaccinated.  The adoption speed for different vaccination status shows the same distribution which could be due to the distribution of pet numbers in each vaccination status categories.  Average adoption speeds for pets appear to be similar across different vaccination status.  Perhaps people do not bother, and would vaccinate the pets if it is not vaccinated or unsure of the status.
+
+### Deworm status
+
+Deworming status of pets in this data set can be _Yes_, _No_ or _Not Sure_ with values from 1 to 3.
+
+```{r pet-dewormed, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# dewormed
+label_dewormed = c("1"="Yes", "2"="No", "3"="Not Sure")
+
+pet_dewormed <- df_pets %>%
+  mutate(Dewormed = label_dewormed[Dewormed],
+         Species = label_species[Type]) %>%
+  select(PetID, Species, Dewormed, AdoptionSpeed)
+
+pet_dewormed %>%
+  ggplot(aes(x=Dewormed, fill=Dewormed)) +
+  geom_bar(position='dodge', alpha=alpha_bar) +
+  ggtitle('Pet dewormed') +
+  xlab('') +
+  ylab('Count') + 
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'hide') 
+```
+
+```{r pet-dewormed-2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# plot pet dewormed status with adoption speed 
+pet_dewormed %>%
+  mutate(AdoptionSpeed=as.character(AdoptionSpeed)) %>%
+  ggplot(aes(x=AdoptionSpeed, fill=Dewormed)) +
+  geom_bar(position = 'dodge', alpha=alpha_bar) +
+  ggtitle('Adoption speed across pet dewormed status') +
+  xlab('Adoption Speed') +
+  ylab('Count') + 
+  scale_x_discrete(labels = adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'bottom',
+        legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt')) +
+  coord_flip() 
+```
+
+```{r pet-dewormed-3, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# average adoption speed across pet dewormed status 
+avg_speed_dewormed <- pet_dewormed %>%
+  group_by(Dewormed, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(Dewormed, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_dewormed)
+avg_speed_dewormed %>% 
+  ggplot() + 
+  geom_point(aes(x=Dewormed,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across dewormed status") +
+  xlab("Dewormed Status") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white"))
+```
+
+Most pets are listed appear to be dewormed. However the combined number of pets with dewormed status _No_ and _Not Sure_ is close to pets having _Yes_ dewormed status. The adoption speed for different dewormed status shows the same distribution which could be due to the distribution of pet numbers in each dewormed status categories.  Average adoption speeds for pets appear to be similar across different dewormed status.
+
+### Sterilization status
+
+Sterilization (spayed or neutered) status of pets in this data set can be _Yes_, _No_ or _Not Sure_ with values from 1 to 3.
+
+```{r pet-sterilized, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# sterilized
+label_sterilized = c("1"="Yes", "2"="No", "3"="Not Sure")
+
+pet_sterilized <- df_pets %>%
+  mutate(Sterilized = label_sterilized[Sterilized],
+         Species = label_species[Type]) %>%
+  select(PetID, Species, Sterilized, AdoptionSpeed)
+
+pet_sterilized %>%
+  ggplot(aes(x=Sterilized, fill=Sterilized)) +
+  geom_bar(position='dodge', alpha=alpha_bar) +
+  ggtitle('Pet sterilized') +
+  xlab('') +
+  ylab('Count') + 
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'hide') 
+```
+
+```{r pet-sterilized-2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# plot pet sterilized status with adoption speed 
+pet_sterilized %>%
+  mutate(AdoptionSpeed=as.character(AdoptionSpeed)) %>%
+  ggplot(aes(x=AdoptionSpeed, fill=Sterilized)) +
+  geom_bar(position = 'dodge', alpha=alpha_bar) +
+  ggtitle('Adoption speed across pet sterilized status') +
+  xlab('Adoption Speed') +
+  ylab('Count') + 
+  scale_x_discrete(labels = adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'bottom',
+        legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt')) +
+  coord_flip() 
+```
+
+```{r pet-sterilized-3, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# average adoption speed across pet dewormed status 
+avg_speed_sterilized <- pet_sterilized %>%
+  group_by(Sterilized, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(Sterilized, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_sterilized)
+avg_speed_sterilized %>% 
+  ggplot() + 
+  geom_point(aes(x=Sterilized,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across sterilized status") +
+  xlab("Sterilized Status") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white"))
+```
+
+Most pets are listed as not sterilized. The adoption speed for different sterilization status shows the same distribution which could be due to the distribution of pet numbers in each sterilization status categories.  Average adoption speeds show pets that are not sterilized have faster adoption speed.  
+
+### Health status
+
+Health status of pets in this data set can be listed as _Healthy_, _Minor Injury_ or _Serious Injury_ with values from 1 to 3.  The data set documentation states pets with unspecified health status are indicated with value 0.  A quick check on the data set shows that all pets listed has health status specified.
+
+```{r pet-health-clean}
+nrow(df_pets %>% filter(Health==0))
+```
+
+```{r pet-health, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# health
+label_health = c("1"="Healthy", "2"="Minor Injury", 
+                 "3"="Serious Injury", "0"="Not Specified")
+
+pet_health <- df_pets %>%
+  mutate(Health = label_health[Health],
+         Species = label_species[Type]) %>%
+  select(PetID, Species, Health, AdoptionSpeed)
+
+pet_health %>%
+  ggplot(aes(x=Health, fill=Health)) +
+  geom_bar(position='dodge', alpha=alpha_bar) +
+  ggtitle('Pet health') +
+  xlab('') +
+  ylab('Count') + 
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'hide') 
+```
+
+```{r pet-health-2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# plot pet health status with adoption speed 
+pet_health %>%
+  mutate(AdoptionSpeed=as.character(AdoptionSpeed)) %>%
+  ggplot(aes(x=AdoptionSpeed, fill=Health)) +
+  geom_bar(position = 'dodge', alpha=alpha_bar) +
+  ggtitle('Adoption speed across pet health status') +
+  xlab('Adoption Speed') +
+  ylab('Count') + 
+  scale_x_discrete(labels = adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'bottom',
+        legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt')) +
+  coord_flip() 
+```
+
+```{r pet-health-3, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# average adoption speed across pet health status 
+avg_speed_health <- pet_health %>%
+  group_by(Health, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(Health, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_health)
+avg_speed_health %>% 
+  ggplot() + 
+  geom_point(aes(x=Health,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across health status") +
+  xlab("Health Status") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white"))
+```
+
+Almost all pets are listed as _healthy_.  Perhaps the person who list the pet wanted to promote people to take up the pet?   The adoption speed for different health status shows the same distribution which could be due to the distribution of pet numbers in each health status categories.  Average adoption speeds show pets that are healthy have faster adoption speed, while those with _serious injury_ has slower adoption speed.
+
+### Pet quantity
+
+The number of pets represented in each profile listing is indicated in the column Quantity.  A quick check of the data set indicate there is no profile listed with Quantity value of less than 0.  So the data set is clean in this aspect.
+
+```{r pet-quantity-clean}
+nrow(df_pets %>% filter(Quantity<=0))
+```
+
+```{r pet-quantity, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+pet_quantity <- df_pets %>%
+  mutate(Species = label_species[Type],
+         Quantity = as.factor(Quantity)) %>%
+  select(PetID, Species, Quantity, AdoptionSpeed)
+
+pet_quantity %>%
+  group_by(Quantity) %>%
+  summarise(Count=n())
+
+pet_quantity %>%
+  ggplot(aes(x=as.numeric(Quantity), fill=Quantity)) +
+  geom_bar(position='dodge', alpha=alpha_bar) +
+  ggtitle('Number of pets in each profile listed') +
+  xlab('') +
+  ylab('Count') + 
+  # scale_x_sqrt(breaks=c(1:5,seq(6,max(pet_quantity$Quantity),5))) +
+  scale_y_log10() +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'hide') 
+```
+
+```{r pet-quantity-2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# average adoption speed across number of pets in each profile
+avg_speed_quantity <- pet_quantity %>%
+  group_by(Quantity, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(Quantity, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+top_n(avg_speed_quantity, n=20)
+avg_speed_quantity %>% 
+  ggplot() + 
+  geom_point(aes(x=as.numeric(Quantity),y=AvgSpeed,size=Count,color=Species), 
+             alpha=0.5) +
+  ggtitle("Average adoption speed across profiles with different number of pets") +
+  xlab("Number of pets in each profile") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white"))
+```
+
+Each profile usually lists less than 5 pets. However, there are some with quantity value as high as 20.  Adoption speed of each profile is based on all the pets in the profile get adopted.  Hence, profiles with large number of pets would take more time to be completed adopted.  
+
+Average adoption speeds show profiles with less number of pets have faster adoption speed, while those with more number of pets has slower adoption speed, though there are few exceptional cases.
+
+### Adoption fee
+
+The adoption fee is in the column Fee, with 0 indicating the pet is available for free.  A quick check of the data set indicate there is no profile listed with Fee value of less than 0.  So the data set is clean in this aspect.
+
+```{r pet-fee-clean}
+nrow(df_pets %>% filter(Fee <0))
+```
+
+```{r pet-fee-distribution, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+pet_fee <- df_pets %>%
+  mutate(Species = label_species[Type],
+         Fee = as.numeric(Fee)) %>%
+  select(PetID, Species, Fee, AdoptionSpeed)
+
+pet_fee_summary <- pet_fee %>%
+  group_by(Fee) %>%
+  summarise(Count=n(), Average=n()/nrow(df_pets))
+pet_fee_summary
+
+max_pet_fee <- max(pet_fee$Fee)
+
+# free pets
+free_pet_ratio <- pet_fee_summary[(pet_fee_summary$Fee==0),]$Average
+
+# average adoption speed across number of pets in each profile
+avg_speed_fee <- pet_fee %>%
+  group_by(Fee, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(Fee, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+
+top_n(avg_speed_fee, n=20)
+
+avg_speed_fee %>% 
+  ggplot() + 
+  geom_point(aes(x=Fee,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across adoption fees") +
+  xlab("Adoption fee") +
+  ylab("Average adoption speed") + 
+  scale_x_sqrt(breaks=c(seq(0,200,100),seq(400,1000,200),seq(2000,3000,1000))) +
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white"))
+```
+
+`r round(free_pet_ratio*100)`% of pets are listed as free, with others having fees up to `r max_pet_fee`.  It is interesting to note that pets listed for free fall somewhere in between the adoption speeds.  However, there are people who are willing to pay up to 2000 and adopt the pet within a week of its listing.  Similarly, there are pets with adoption fee that end up not adopted after 100 days.  Perhaps people are willing to pay a fee for a healthy pet, particular breed or other characteristics.
+
+### State locations
+
+Some states have more pets listed for adoption than the rest.  Average adoption speeds for pets appear to be similar across different state locations, with a few states where pets with small numbers are adopted at faster or slower adoption speed than average.
+
+```{r pet-state, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# state location in Malaysia
+label_state = df_state$StateName
+# data set is clean - all pets listed has valid state specified
+nrow(df_pets %>% filter(State==0))
+
+pet_state <- df_pets %>%
+  mutate(
+    # State = as.factor(State),
+    Species = label_species[Type]) %>%
+  select(PetID, Species, State, AdoptionSpeed)
+
+pet_state %>%
+  # mutate(State=as.character(State)) %>%
+  left_join(x=., y=df_state, by=c('State'='StateID')) %>%
+  ggplot(aes(x=StateName, fill=StateName)) +
+  geom_bar(position='dodge', alpha=alpha_bar) +
+  ggtitle('State location where pet is listed') +
+  scale_y_sqrt(breaks=c(100,500,seq(1000,9000,1000))) +
+  xlab('') +
+  ylab('Count') + 
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'hide') 
+```
+
+```{r pet-state-2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# average adoption speed across pet different state locations
+avg_speed_state <- pet_state %>%
+  # mutate(State=as.character(State)) %>%
+  left_join(x=., y=df_state, by=c('State'='StateID')) %>%
+  group_by(StateName, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(StateName, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_state)
+avg_speed_state %>% 
+  ggplot() + 
+  geom_point(aes(x=StateName,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across different state locations") +
+  xlab("State locations where pet is listed") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white"))
+```
+
+### Pet rescuers
+
+ResuerID in this data set is masked. However, the data set preserves a unique mask to uniquely identify the rescuers.
+
+```{r pet-rescuer, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# RescuerID
+# > interesting to note there are some dedicated kind souls who are out there rescuing pets
+df_pets %>% 
+  group_by(RescuerID) %>% 
+  summarise(n=n()) %>% 
+  select(RescuerID, n) %>% 
+  arrange(desc(n))
+
+pet_rescuer <- df_pets %>%
+  mutate(RescuerID = as.factor(RescuerID),
+         Species = label_species[Type]) %>%
+  select(PetID, Species, RescuerID, AdoptionSpeed)
+
+# rescuers who rescue pets with count > x
+pet_rescuer %>%
+  group_by(RescuerID) %>%
+  summarise(Count=n()) %>%
+  filter(Count > 10) %>%
+  mutate(RescuerID=fct_reorder(RescuerID, desc(Count))) %>%
+  ggplot(aes(x=RescuerID, y=Count)) +
+  geom_col(position='dodge', alpha=alpha_bar) +
+  ggtitle('Pets by rescuers') +
+  xlab('Rescuers') +
+  ylab('Count') + 
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = 'hide') 
+```
+
+```{r pet-rescuer-2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# average adoption speed across pet different rescuers who are listed in more than x profiles
+avg_speed_rescuer <- pet_rescuer %>%
+  group_by(RescuerID, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(RescuerID, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+head(avg_speed_rescuer)
+avg_speed_rescuer %>%
+  filter(Count > 10) %>%
+  ggplot() + 
+  geom_point(aes(x=RescuerID,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across different rescuers") +
+  xlab("Rescuers") +
+  ylab("Average adoption speed") + 
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major.y = element_line(size = 0.2, linetype = 'solid',
+                                          colour = "grey"), 
+        panel.grid.minor.y = element_line(size = 0.1, linetype = 'solid',
+                                          colour = "white"))
+```
+
+It is interesting to note that there are some rescuers who are listed in more than 10 profiles and have faster average adoption speed of the pets they rescued.
+
+### Photo and video counts
+
+Profile listings can have photos and videos of the pets.  A quick check of the data set indicate that the columns PhotoAmt and VideoAmt do not contain invalid values.
+
+```{r pet-photo-video-clean}
+nrow(df_pets %>% filter(VideoAmt <0))
+
+nrow(df_pets %>% filter(PhotoAmt <0))
+```
+
+```{r pet-photo-video-distribution, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+# Photo Amount
+pet_photo <- df_pets %>%
+  mutate(Species = label_species[Type],
+         PhotoAmt = as.numeric(PhotoAmt)) %>%
+  select(PetID, Species, PhotoAmt, AdoptionSpeed)
+
+pet_photo %>%
+  group_by(PhotoAmt) %>%
+  summarise(Count=n(), Average=n()/nrow(df_pets))
+
+# max(pet_photo$PhotoAmt)
+
+# average adoption speed across number of photos in each profile
+avg_speed_photo <- pet_photo %>%
+  group_by(PhotoAmt, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(PhotoAmt, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+top_n(avg_speed_photo, n=20)
+```
+
+```{r pet-photo-video-distribution-2, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+avg_speed_photo %>% 
+  ggplot() + 
+  geom_point(aes(x=PhotoAmt,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across pet photos") +
+  xlab("Number of photos") +
+  ylab("Average adoption speed") + 
+  scale_x_sqrt() +
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white"))
+```
+
+```{r pet-photo-video-distribution-3, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+# Video Amount
+pet_video <- df_pets %>%
+  mutate(Species = label_species[Type],
+         VideoAmt = as.numeric(VideoAmt)) %>%
+  select(PetID, Species, VideoAmt, AdoptionSpeed)
+
+pet_video %>%
+  group_by(VideoAmt) %>%
+  summarise(Count=n(), Average=n()/nrow(df_pets))
+
+# max(pet_video$VideoAmt)
+
+# average adoption speed across number of videos in each profile
+avg_speed_video <- pet_video %>%
+  group_by(VideoAmt, Species) %>%
+  summarise(AvgSpeed=mean(AdoptionSpeed),Count=n()) %>%
+  select(VideoAmt, Species, AvgSpeed, Count) %>%
+  arrange(desc(AvgSpeed))
+top_n(avg_speed_video, n=20)
+```
+
+```{r pet-photo-video-distribution-4, echo=FALSE, message=FALSE, warning=FALSE, fig.margin=TRUE}
+
+avg_speed_video %>% 
+  ggplot() + 
+  geom_point(aes(x=VideoAmt,y=AvgSpeed,size=Count,color=Species), alpha=0.5) +
+  ggtitle("Average adoption speed across pet videos") +
+  xlab("Number of videos") +
+  ylab("Average adoption speed") + 
+  scale_x_sqrt() +
+  scale_y_continuous(limits = c(0, 4), labels=adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 65, hjust = 1),
+        legend.position = 'right',
+        # legend.title = element_blank(),
+        legend.spacing.x = unit(5, 'pt'),
+        legend.key.size = unit(10,'pt'),
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.2, linetype = 'solid',
+                                        colour = "grey"), 
+        panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                        colour = "white"))
+```                                        
+
+Pets listed with no photo or at all show slower adoption speed in general.  Likewise for pets with no video or at all.
+
+```{r memory-clean-up, echo=FALSE, message=FALSE, warning=FALSE}
+# Clean up memory: unused data frames 
+rm('pet_age', 'pet_breed_mix', 'pet_color', 'pet_dewormed', 'pet_fee', 'pet_fur', 
+   'pet_gender', 'pet_health', 'pet_named', 'pet_photo', 'pet_quantity', 
+   'pet_rescuer', 'pet_size', 'pet_species', 'pet_state', 'pet_sterilized', 
+   'pet_vaccinated', 'pets_older_2yr_adopted_1wk')
+```
+
+## Preparing data sets 
+
+Some information that are deemed redundant is dropped from the _df\_pets_ data frame and predictors columns are converted into factors accordingly.
+
+```{r drop-redundant-cols, message=FALSE, echo=FALSE, warning=FALSE}
+##########################################################
+#
+# Prepare data set to experiment with models
+#
+##########################################################
+
+# backup: df_pets
+df_pets_backup <- df_pets
+
+# set categorical variables to factors for knncat()
+df_pets$Type <- as.factor(df_pets$Type)
+df_pets$Breed1 <- as.factor(df_pets$Breed1)
+df_pets$Breed2 <- as.factor(df_pets$Breed2)
+df_pets$Gender <- as.factor(df_pets$Gender)
+df_pets$Color1 <- as.factor(df_pets$Color1)
+df_pets$Color2 <- as.factor(df_pets$Color2)
+df_pets$Color3 <- as.factor(df_pets$Color3)
+df_pets$MaturitySize <- as.factor(df_pets$MaturitySize)
+df_pets$FurLength <- as.factor(df_pets$FurLength)
+df_pets$Vaccinated <- as.factor(df_pets$Vaccinated)
+df_pets$Dewormed <- as.factor(df_pets$Dewormed)
+df_pets$Sterilized <- as.factor(df_pets$Sterilized)
+df_pets$Health <- as.factor(df_pets$Health)
+df_pets$State <- as.factor(df_pets$State)
+df_pets$AdoptionSpeed <- as.factor(df_pets$AdoptionSpeed)
+
+# drop unused columns
+df_pets <- within(df_pets, rm('Breed_Combined','Breed1_Name','Breed2_Name', 'PetID',
+                              'RescuerID','Name','Description','Breed_Mix'))
+
+# move AdoptionSpeed to last column
+df_pets <- df_pets %>% select(-AdoptionSpeed,everything())
+```
+
+
+The _df\_pets_ data frame is validated again to ensure there is no NAs in the data set.
+
+```{r no-na, echo=FALSE}
+# check again: no NAs in data set
+sapply(df_pets, function(x) sum(is.na(x)))
+```
+
+## Modelling approach
+
+Three models based on caret package's random forest algorithm will be build in this study.  The first model will be trained with default settings and search for the best mtry value using all 20 predictors in the original data set with imbalanced classes.  Accuracy is used to select the optimal model using the largest value.
+
+The second model will be similar to the first model, with the exception that it will be trained using a data set with balanced classes.  This is will be described in detail in the next section.
+
+For the third model, the mtry value will be fixed to the mtry value that produces the best accuracy from the previous model and explore different ntree values.
+
+The data set is split with a 9:1 ratio - into _df\_train_ that is to be used for training and testing; and _df\_validation_ for validation.
+
+All the experimental models in this study are build with the aim to optimize each of the model for the best accuracy using _df\_train_ for training and testing, and validated with _df\_validation_.  The purpose for validation to see if the models' results remain consistent when valdating it against a new data set (i.e. _df\_validation_) that it has never seen during the training and testing stage.
+
+
+```{r split-data-set-train-test, echo=FALSE, message=FALSE, warning=FALSE}
+# ensure results are repeatable
+seed <- 1
+set.seed(seed)
+
+# split data set to train/test
+ratio_test <- 0.1
+val_index <- createDataPartition(y = df_pets$AdoptionSpeed, times = 1, 
+                                  p = ratio_test, list = FALSE)
+df_train <- df_pets[-val_index,]
+temp <- df_pets[val_index,]
+
+# Make sure features in df_validation set are also in df_train set
+df_validation <- temp %>% 
+  semi_join(df_train, by = "Type") %>%
+  semi_join(df_train, by = "Age") %>%
+  semi_join(df_train, by = "Breed1") %>%
+  semi_join(df_train, by = "Breed2") %>%
+  semi_join(df_train, by = "Gender") %>%
+  semi_join(df_train, by = "Color1") %>%
+  semi_join(df_train, by = "Color2") %>%
+  semi_join(df_train, by = "Color3") %>%
+  semi_join(df_train, by = "MaturitySize") %>%
+  semi_join(df_train, by = "FurLength") %>%  
+  semi_join(df_train, by = "Vaccinated") %>%
+  semi_join(df_train, by = "Dewormed") %>%
+  semi_join(df_train, by = "Sterilized") %>%
+  semi_join(df_train, by = "Health") %>%
+  semi_join(df_train, by = "State") %>%
+  semi_join(df_train, by = "AdoptionSpeed") 
+
+# Add rows removed from df_validation set back into df_train set
+removed <- anti_join(temp, df_validation)
+# nrow(removed)
+df_train <- rbind(df_train, removed)
+# nrow(df_validation)/nrow(df_train)
+
+# remove unsed data
+rm(val_index, temp, removed)
+
+# df_train data structure
+# str(df_train)
+# ncol(df_train)
+# nrow(df_train)
+
+# df_validation data structure
+# str(df_validation)
+# ncol(df_validation)
+# nrow(df_validation)
+
+# completed df_train/df_validation preparation
+
+```
+
+
+```{r train-validation-ratio, echo=FALSE}
+# cat("ratio df_train / df_pets: ", nrow(df_train)/nrow(df_pets), "\n")
+# cat("ratio df_validation / df_pets: ", nrow(df_validation)/nrow(df_pets), "\n")
+cat('ratio of df_train : df_validation is about ', round(10*nrow(df_train)/nrow(df_pets)), ':',
+    round(10*nrow(df_validation)/nrow(df_pets)), '\n')
+```
+
+The importance of features can be estimated from data used during the model building. Most decision tree algorithms like the random forest have built-in mechanisms to report on variable importance.  In this study, varImp is used to show and estimate the variable importance to see if that is close the insights gained during the data exploration and visualization in previous section.
+
+# Results
+
+This section describes the results and findings from experimenting with various prediction models.
+
+
+```{r modelling-metrics, echo=FALSE}
+##########################################################
+#
+# try: Random forest
+#
+# load the parameters used for building the prediction model although this Rmd file will load
+# the pre-built models that were saved in R object files
+#
+##########################################################
+
+# mtry: Number of variables randomly sampled as candidates at each split
+# ntree: Number of trees to grow
+# tuneLength: tells the algorithm to try different default values for the main parameter
+# number: number of folds in cross-validation - 10-fold CV mean dividing the training dataset 
+#         randomly into 10 parts and then using each of 10 parts as testing dataset for the 
+#         model trained on other 9.
+# repeat: number of times the number of folds in cross validation is repeated 
+
+num_fold <- 10
+num_repeat <- 3
+
+# set metric
+metric <- ifelse(is.factor(df_train$AdoptionSpeed), 'Accuracy', 'RMSE')
+```
+
+
+## Model 1: Random forest with 10-fold cross validation method
+
+The first model is built using caret package's random forest algorithm with all 20 predictors from the _df\_train_ data set to predict AdoptionSpeed class (pet adoption speed) that falls into one of the 5 classes, using 10-fold cross-validation sampling method.
+
+```{r load-model-1, echo=FALSE}
+model_1 <- readRDS('./model_1.rds')
+```
+
+Results from training this first model shows an accuracy of `r max(model_1$results$Accuracy)` with mtry = `r model_1$results$mtry[max.col(t(model_1$results$Accuracy))]` having the highest accuracy.
+
+```{r show-model-1, echo=FALSE, fig.margin=TRUE}
+print(model_1)
+plot(model_1)
+print(model_1$results)
+```
+
+The output of variable importance shows the order of importance of variables very much corresponds to what is observed in the previous section of data exploration and visualization with predictors like Breed1, Age, PhotoAmt, Desc_WordCount, Type and Sterilized being ranked as important ones.
+
+```{r show-imp-1, echo=FALSE}
+imp_1 <- varImp(model_1)
+print(imp_1)
+```
+
+This first prediction model is also tested on the _df\_validation_ data set where the training set (_df\_train_) has never been exposed to.  
+
+```{r validate-model-1, echo=FALSE}
+prediction_1 <- predict(model_1, df_validation)
+table(prediction_1)
+df_prediction_1 <- as.data.frame(prediction_1)
+cm_1 <- confusionMatrix(df_prediction_1$prediction, df_validation$AdoptionSpeed)
+print(cm_1)
+```
+
+Results from validating this first model against the _df\_validation_ data set shows an accuracy of `r cm_1$overall['Accuracy']` that is close to the training set.  This re-assures the consistency of the model.
+
+```{r store-model-1-result, echo=FALSE, warning=FALSE}
+# create a table to store the results for each model, starting with the first simple model
+results <- data_frame(model = 'model 1: random forest, cv=10, mtry=133', 
+                      accuracy = max(model_1$results$Accuracy),
+                      kappa = max(model_1$results$Kappa))
+kp <- 20
+results %>% knitr::kable(padding=kp)
+```
+
+## Model 2: Dealing with Imbalanced Classes 
+
+In most real-world classification problems, sample data sets may have some level of class imbalance, which is when each class does not make up an equal portions in the data set. In this case, it is crucial to properly adjust metrics and methods accordingly.
+
+As mentioned in previous section, one of the classes (AdoptionSpeed of 4, which indicates the pet is adopted on the same day it is listed) is not evenly distributed like the other classes.  
+
+```{r uneven-classes, echo=FALSE, message=TRUE, warning=FALSE}
+# note that: there is a small proportion of Adoption speed of class 4
+# compared the other classes
+uneven_dist <- df_pets %>%
+  group_by(AdoptionSpeed) %>%
+  summarise(n=n(), ratio=n()/nrow(df_pets))
+uneven_dist
+```
+
+```{r set-replication-df_4, echo=FALSE, message=FALSE, warning=FALSE}
+# number of times to replicate the sample size for AdoptionSpeed == 4
+df_4_times <- 7
+```
+
+This AdoptionSpeed class of value 4 is only about `r round((uneven_dist[(uneven_dist$AdoptionSpeed==4),]$ratio*100),1)`% of the sample size.  
+
+A simple way to fix imbalanced data set is simply to balance them, either by oversampling instances of the minority class or undersampling instances of the majority class. In this project, the AdoptionSpeed class of 4 will be oversampled to balance it out with the rest of the classes.  The _df\_pets_ data frame is reconstructed (restored from a backup data frame _df\_pets\_backup_) and the AdoptionSpeed class of 4 being replicated `r df_4_times` times to match the distribution of the other classes of AdoptionSpeed.
+
+It is worth noting that, this simple method has its flaws. Oversampling a minority class can lead to model overfitting, since it will introduce duplicate instances, drawing from a pool of instances that is already small. Likewise, undersampling would also introduce bias as samples with good value may be discarded.
+
+There are other methods to approach imbalanced data sets such as Synthetic Minority Oversampling (SMOTE) technique; or using Kappa coefficient as metric of measurement instead of accuracy.  These sampling method and metric will not be in the scope of this project.
+
+
+```{r restore-df_pets, echo=FALSE, message=FALSE, warning=FALSE}
+# restore the df_pets data frame
+df_pets <- df_pets_backup
+
+# select all the rows with AdoptionSpeed == 4
+df_4 <- df_pets[(df_pets$AdoptionSpeed=="4"),]
+cat('Samples with AdoptionSpeed==4 is', nrow(df_4), '\n')
+
+# replicate the samples with AdoptionSpeed == 4, so that it has 
+# a somewhat even distribution across the different AdoptionSpeed classes
+for (i in 1:df_4_times) {
+  df_pets <- rbind(df_pets, df_4)
+}
+```
+
+```{r plot-even-adopt-speed, echo=FALSE, warning=FALSE}
+# plot adoption speed
+adoption_speed_count <- df_pets %>%
+  group_by(AdoptionSpeed) %>%
+  summarise(Count = n()) %>%
+  mutate(AdoptionSpeed=as.character(AdoptionSpeed),
+         Rate=Count/nrow(df_pets)) %>%
+  select(AdoptionSpeed, Count, Rate) %>%
+  arrange(desc(AdoptionSpeed))
+adoption_speed_count
+adoption_speed_count %>%
+  ggplot(aes(x=AdoptionSpeed, y=Count)) +
+  geom_bar(stat = "identity", alpha=.8, fill=rainbow(n=length(adoption_speed_count$AdoptionSpeed))) +
+  ggtitle('Adoption Speed') +
+  xlab('Adoption Speed') +
+  ylab('Count') + 
+  scale_x_discrete(labels = adoption_speed_desc) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  coord_flip()
+```
+
+The _df\_train_ and _df\_validation_ data sets are re-split like previous.
+
+```{r re-split-df_pets, echo=FALSE, message=FALSE, warning=FALSE}
+# re-split the df_pets into df_train and df_validation
+#
+# set categorical variables to factors for knncat()
+df_pets$Type <- as.factor(df_pets$Type)
+df_pets$Breed1 <- as.factor(df_pets$Breed1)
+df_pets$Breed2 <- as.factor(df_pets$Breed2)
+df_pets$Gender <- as.factor(df_pets$Gender)
+df_pets$Color1 <- as.factor(df_pets$Color1)
+df_pets$Color2 <- as.factor(df_pets$Color2)
+df_pets$Color3 <- as.factor(df_pets$Color3)
+df_pets$MaturitySize <- as.factor(df_pets$MaturitySize)
+df_pets$FurLength <- as.factor(df_pets$FurLength)
+df_pets$Vaccinated <- as.factor(df_pets$Vaccinated)
+df_pets$Dewormed <- as.factor(df_pets$Dewormed)
+df_pets$Sterilized <- as.factor(df_pets$Sterilized)
+df_pets$Health <- as.factor(df_pets$Health)
+df_pets$State <- as.factor(df_pets$State)
+df_pets$AdoptionSpeed <- as.factor(df_pets$AdoptionSpeed)
+
+# drop unused columns
+df_pets <- within(df_pets, rm('Breed_Combined','Breed1_Name','Breed2_Name',
+                              'PetID','RescuerID','Name','Description','Breed_Mix'))
+
+# df_pets <- within(df_pets, rm('Desc_WordCount'))
+
+# move AdoptionSpeed to last column
+df_pets <- df_pets %>% select(-AdoptionSpeed,everything())
+
+# df_pets$AdoptionSpeed <- as.factor(df_pets$AdoptionSpeed)
+
+# ensure results are repeatable
+seed <- 1
+set.seed(seed)
+
+# split data set to train/test
+ratio_test <- 0.1
+val_index <- createDataPartition(y = df_pets$AdoptionSpeed, times = 1, 
+                                 p = ratio_test, list = FALSE)
+df_train <- df_pets[-val_index,]
+temp <- df_pets[val_index,]
+
+# Make sure features in df_validation set are also in df_train set
+df_validation <- temp %>% 
+  semi_join(df_train, by = "Type") %>%
+  semi_join(df_train, by = "Age") %>%
+  semi_join(df_train, by = "Breed1") %>%
+  semi_join(df_train, by = "Breed2") %>%
+  semi_join(df_train, by = "Gender") %>%
+  semi_join(df_train, by = "Color1") %>%
+  semi_join(df_train, by = "Color2") %>%
+  semi_join(df_train, by = "Color3") %>%
+  semi_join(df_train, by = "MaturitySize") %>%
+  semi_join(df_train, by = "FurLength") %>%  
+  semi_join(df_train, by = "Vaccinated") %>%
+  semi_join(df_train, by = "Dewormed") %>%
+  semi_join(df_train, by = "Sterilized") %>%
+  semi_join(df_train, by = "Health") %>%
+  semi_join(df_train, by = "State") %>%
+  semi_join(df_train, by = "AdoptionSpeed") 
+
+# Add rows removed from df_validation set back into df_train set
+removed <- anti_join(temp, df_validation)
+# nrow(removed)
+df_train <- rbind(df_train, removed)
+# nrow(df_validation)/nrow(df_train)
+
+# remove unsed data
+rm(val_index, temp, removed)
+
+# df_train data structure
+# str(df_train)
+# ncol(df_train)
+# nrow(df_train)
+
+# df_validation data structure
+# str(df_validation)
+# ncol(df_validation)
+# nrow(df_validation)
+```
+
+```{r check-no-na, echo=FALSE, message=FALSE, warning=FALSE}
+# this is not displayed, just to check
+# check again: no NAs in data set
+no_display <- sapply(df_pets, function(x) sum(is.na(x)))
+```
+
+```{r new-data-sets, echo=FALSE, warning=FALSE}
+# cat('ratio df_train/df_pets: ', nrow(df_train)/nrow(df_pets), '\n')
+# cat('ratio df_validation/df_pets: ', nrow(df_validation)/nrow(df_pets), '\n')
+cat('ratio of df_train : df_validation is about ', round(10*nrow(df_train)/nrow(df_pets)), ':',
+    round(10*nrow(df_validation)/nrow(df_pets)), '\n')
+```
+
+```{r load-model-2, echo=FALSE}
+model_2 <- readRDS('./model_2.rds')
+```
+
+This second model that is trained with a more evenly distributed set of prediction classes (AdoptionSpeed) in the data set has accuracy of `r max(model_2$results$Accuracy)` with mtry = `r model_2$results$mtry[max.col(t(model_2$results$Accuracy))]` having the best accuracy.  The experiment results show that having a somewhat balanced portions of classes does improve the accuracy of this model when compared to the previous model which was trained with imbalanced portions of classes. The value of Kappa coefficient also improved greatly in this second model, compared to the first model; although this model is not tuned to optimize on Kappa coefficient.
+
+```{r show-model-2, echo=FALSE, fig.margin=TRUE}
+print(model_2)
+plot(model_2)
+print(model_2$results)
+```
+
+The output of variable importance shows the order of importance of variables very much corresponds to what is observed in the first model and previous section of data exploration and visualization with predictors like Age, PhotoAmt, Desc_WordCount and Breed1 being ranked as top important ones.  
+
+```{r show-imp-2, echo=FALSE}
+imp_2 <- varImp(model_2)
+print(imp_2)
+```
+
+This prediction model is also tested on the _df\_validation_ data set where the training set (_df\_train_) has never seen.  
+
+```{r validate-model-2, echo=FALSE}
+prediction_2 <- predict(model_2, df_validation)
+table(prediction_2)
+df_prediction_2 <- as.data.frame(prediction_2)
+cm_2 <- confusionMatrix(df_prediction_2$prediction, df_validation$AdoptionSpeed)
+print(cm_2)
+```
+
+Validation result of this second model against the _df\_validation_ data set has an accuracy of `r cm_2$overall['Accuracy']` that is close to the training data set.  This re-assures the consistency of the model.
+
+The sensitivity for class AdoptionSpeed 4 has also greatly improved with this model that is trained with data set that have a somewhat balanced portion of classes.
+
+```{r store-model-2-result, echo=FALSE}
+model_2_result <- data_frame(model = 'model 2: re-train model 1 using data set with balanced portion of classes', 
+                             accuracy = max(model_2$results$Accuracy),
+                             kappa = max(model_2$results$Kappa))
+
+results <- bind_rows(results, model_2_result)
+results %>% knitr::kable(padding=kp)
+```
+
+## Model 3: Experimenting with ntree parameter
+
+The third model is build based on the previous model and fixing the parameter mtry = `r model_2$results$mtry[max.col(t(model_2$results$Accuracy))]`.  This third model will study how the different ntree values of 100, 200, 300, 500 (default ntree value), 1000, 1500 and 2000 would affect the accuracy.
+
+Results show that ntree value of 300 trees gives the best accuracy.
+
+```{r load-model3-ntree-summary-result, echo=FALSE, fig.margin=TRUE}
+
+# model_3_modellist <- readRDS('./model_3_modellist_ntrees.rds')
+# model_3_ntree <- resamples(model_3_modellist)
+#
+# modellist is not loaded in Rmd script due to size limitation to upload to edX for submission
+# result from resamples() of modellist is loaded instead
+model_3_ntree <- readRDS('./model_3_ntrees.rds')
+summary(model_3_ntree)
+dotplot(model_3_ntree)
+```
+
+```{r pick-ntree-for-model-3, echo=FALSE}
+# examine the model with best accuracy (mtry=133, ntree=1000)
+# model_3 <- model_3_modellist["300"]
+model_3 <- readRDS('./model_3.rds')
+print(model_3)
+print(model_3$`300`$results)
+```
+
+The result shows that setting ntree value to 300 produces the best accuracy among the ntree values explored in this case. Kappa coefficient is also the highest for ntree=300 although the model is not optimized for Kappa coefficient value in this study.  
+
+The output of variable importance shows the order of importance of variables very much corresponds to what is observed in the first two models and also previous section of data exploration and visualization with predictors like Age, PhotoAmt, Quantity and Desc_WordCount now being ranked as important ones.
+
+```{r show-imp-3, echo=FALSE}
+imp_3 <- varImp(model_3$`300`)
+print(imp_3)
+```
+
+This third prediction model is also tested on the _df\_validation_ data set where the training set (_df\_train_) has never seen. The results shows a close accuracy range and this re-assures that the model is consistent.
+
+```{r validate-model-3}
+prediction_3 <- predict(model_3, df_validation)
+table(prediction_3)
+df_prediction_3 <- as.data.frame(prediction_3)
+cm_3 <- confusionMatrix(df_prediction_3$X300, df_validation$AdoptionSpeed)
+print(cm_3)
+```
+
+Validation of the third model against the _df\_validation_ data set shows accuracy value of `r cm_2$overall['Accuracy']`.
+
+```{r store-model-3-result, echo=FALSE}
+model_3_result <- data_frame(model = 'model 3: tune mtry=133 and ntree=300', 
+                      accuracy = model_3$`300`$results$Accuracy,
+                      kappa = model_3$`300`$results$Kappa )
+
+results <- bind_rows(results, model_3_result)
+results %>% knitr::kable(padding=kp)
+```
+
+The third model shows that ntree parameter of 300 trees has the best accuracy and Kappa coefficient among the  ntree values explored in this case.  This experiement with the third model explores different ntree values and result shows that having the ntree parameter set to 300 can improve the accuracy; although it is marginal.  In this case, since such a small ntree value can help to improve the accuracy of the prediction model; this finding is helpful for studies carried out with limited computing resource and also helps reduce time in building the model.
+
+In some cases, tuning the number of trees may be unnecessary; instead, simply set the number of trees to a large, computationally feasible number would suffice.    
+
+# Conclusion
+
+This project shows that a popular machine learning algorithm can help in predicting 5 different classes of pet adoption speed based on metadata associated with their online profile listing.  Although the accuracy of the prediction model is not impressive, slightly above 0.5, it is still better than random guess which would have accuracy that is between 0.2 and 0.25.
+
+As mentioned in previous sections and demonstrated in the second model, the sample sizes of the 5 adoption speed classes are not evenly distributed.  More work could be done to optimize the prediction model based on metrics that are not sensitive to uneven distribution of prediction classes, such as the Kappa coefficient. 
+
+More work could also be done to explore how differnt prediction models will behave when they are trained with data set that is balanced using different methods such as SMOTE to balance the classes in the data set. 
+
+This study uses all 20 predictors in the data set to train and experiment with different prediction models with the exception of few columns that considered redundant and are dropped, such as PetID, RescuerID and Name. More work could be done in studying how different number of predictors can help improve the performance of building the prediction models whilst keeping the accuracy of the models at an acceptable level.  This can help to reduce the amount of time and computing resource required to build the prediction models. 
