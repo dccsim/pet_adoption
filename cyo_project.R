@@ -1603,7 +1603,8 @@ nrow(df_validation)
 
 num_fold <- 10
 num_repeat <- 3
-
+seed <- 1
+       
 # set metric
 metric <- ifelse(is.factor(df_train$AdoptionSpeed), 'Accuracy', 'RMSE')
 metric
