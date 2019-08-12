@@ -9,7 +9,7 @@ The final Course Capstone (PH125.9x) requires the student to apply machine learn
 
 The ability to clearly communicate the process and insights gained from an analysis is an important skill for data scientists.
 
-Data set can be selected from [Kaggle](www.kaggle.com) or [UCI Machine Learning Repository](https://archive.ics.uci.edu/ml/datasets.html). 
+Data set can be selected from [Kaggle](www.kaggle.com) or [UCI Machine Learning Repository](https://archive.ics.uci.edu/ml/index.php). 
 
 # Summary of file contents
 * The R script file contains codes used for data exploration, visualisation and building the prediction models
